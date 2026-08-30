@@ -485,7 +485,7 @@ def _chat_anthropic(messages: List[Dict[str, str]], temperatura: float, max_toke
 
 
 # ---------- Azure OpenAI ----------
-AZURE_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
+AZURE_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 
 
 def _chat_azure(messages: List[Dict[str, str]], temperatura: float, max_tokens: int) -> str:
@@ -495,15 +495,34 @@ def _chat_azure(messages: List[Dict[str, str]], temperatura: float, max_tokens: 
     if not endpoint or not deployment:
         raise RuntimeError("Faltan AZURE_OPENAI_ENDPOINT o AZURE_OPENAI_DEPLOYMENT.")
     url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={AZURE_API_VERSION}"
-    r = requests.post(
-        url,
-        headers={"api-key": api_key, "Content-Type": "application/json"},
-        json={"messages": messages, "temperature": temperatura, "max_tokens": max_tokens},
-        timeout=120,
-    )
+    # Los modelos de razonamiento (gpt-5.x, serie o) exigen max_completion_tokens
+    # y solo aceptan la temperatura por defecto; el cuerpo se ajusta según el 400.
+    body = {"messages": messages, "temperature": temperatura, "max_completion_tokens": max_tokens}
+    for _ in range(3):
+        r = requests.post(
+            url,
+            headers={"api-key": api_key, "Content-Type": "application/json"},
+            json=body,
+            timeout=120,
+        )
+        if r.status_code != 400:
+            break
+        detalle = r.text
+        if "max_completion_tokens" in body and "max_completion_tokens" in detalle:
+            body = dict(body)
+            body["max_tokens"] = body.pop("max_completion_tokens")  # API/modelo antiguo
+        elif "temperature" in body and "temperature" in detalle:
+            body = dict(body)
+            body.pop("temperature")  # modelos de razonamiento: solo temperatura por defecto
+        else:
+            break
     if r.status_code != 200:
         raise RuntimeError(f"Azure OpenAI HTTP {r.status_code} -> {r.text[:300]}")
-    return r.json()["choices"][0]["message"]["content"]
+    contenido = r.json()["choices"][0]["message"]["content"]
+    if not contenido:
+        raise RuntimeError("Azure devolvió contenido vacío: sube max_tokens (los modelos de "
+                           "razonamiento consumen parte del presupuesto en pensar).")
+    return contenido
 
 
 def chat_llm(messages: List[Dict[str, str]], temperatura: float = 0.0, max_tokens: int = 600) -> str:
