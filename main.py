@@ -23,6 +23,7 @@ def info():
         "llm": ag.llm_disponible(),
         "modelo_activo": ag.LLM_MODELO_ACTIVO,
         "modelos_candidatos": ag.LLM_MODELOS_CANDIDATOS,
+        "herramientas": ag.CATALOGO_HERRAMIENTAS,
     }
 
 
@@ -91,6 +92,17 @@ PAGINA = """<!doctype html>
   .sugerencias span { font-size:.75rem; border:1px solid var(--borde); background:var(--panel);
                       color:var(--sec); padding:4px 10px; border-radius:999px; cursor:pointer; }
   .sugerencias span:hover { color:var(--azul); border-color:var(--azul); }
+  details.info { background:var(--panel); border:1px solid var(--borde); border-radius:12px;
+                 padding:10px 14px; margin-bottom:10px; font-size:.85rem; }
+  details.info summary { cursor:pointer; color:var(--azul); font-weight:600; }
+  details.info ul { margin:10px 0 6px; padding-left:18px; }
+  details.info li { margin-bottom:6px; line-height:1.4; }
+  details.info code { background:#f1f5f9; padding:1px 5px; border-radius:5px; font-size:.8rem; }
+  .tag-conf { font-size:.7rem; background:var(--amar-bg); color:var(--amar);
+              border:1px solid #fcd34d; border-radius:999px; padding:1px 8px; margin-left:6px; }
+  .descargo { font-size:.75rem; color:var(--sec); line-height:1.45; border-top:1px solid var(--borde);
+              margin-top:8px; padding-top:8px; }
+  .descargo-pie { font-size:.7rem; color:var(--sec); text-align:center; padding:6px 0 2px; }
 </style>
 </head>
 <body>
@@ -99,14 +111,26 @@ PAGINA = """<!doctype html>
     <h1>🛟 Agente de Soporte</h1>
     <div class="badges" id="badges"></div>
   </header>
+  <details class="info" id="panelInfo">
+    <summary>ℹ️ ¿Qué puede hacer este agente? — herramientas y limitaciones</summary>
+    <ul id="listaHerramientas"><li>Cargando catálogo...</li></ul>
+    <div class="descargo">
+      <strong>Limitaciones:</strong> el agente solo ejecuta las operaciones listadas arriba;
+      cualquier otra solicitud no está soportada ni se valida, y será rechazada o respondida
+      con ayuda. Las respuestas las genera un modelo de IA y <strong>pueden contener errores</strong>:
+      verifica los datos antes de tomar decisiones, y recuerda que las acciones sensibles
+      (cambiar estado de tickets, notificar clientes) siempre exigen tu confirmación explícita.
+    </div>
+  </details>
   <div id="chat">
-    <div class="msg agente">Hola, soy el agente de soporte. Puedo buscar clientes, crear, listar y cerrar tickets, hacer resúmenes y enviar notificaciones (simuladas). Las acciones sensibles te pedirán confirmación.</div>
+    <div class="msg agente">Hola, soy el agente de soporte. Puedo buscar clientes, crear, listar y cerrar tickets, hacer resúmenes y enviar notificaciones (simuladas). Las acciones sensibles te pedirán confirmación. Revisa "¿Qué puede hacer este agente?" para ver el detalle.</div>
   </div>
   <div class="sugerencias" id="sugerencias"></div>
   <form id="form">
     <input type="text" id="entrada" placeholder="Escribe tu solicitud..." autocomplete="off" maxlength="500">
     <button class="enviar" id="btn" type="submit">Enviar</button>
   </form>
+  <div class="descargo-pie">Agente demo con IA: puede cometer errores. Solo opera sobre los datos de prueba del laboratorio.</div>
 </div>
 <script>
 const chat = document.getElementById('chat');
@@ -189,7 +213,39 @@ form.addEventListener('submit', (ev) => {
   enviar(mensaje, false);
 });
 
+const NOMBRES_AMIGABLES = {
+  buscar_cliente: 'Buscar cliente',
+  crear_ticket: 'Crear ticket',
+  listar_tickets: 'Listar tickets',
+  actualizar_estado_ticket: 'Cambiar estado de un ticket',
+  resumir_tickets: 'Resumen general de tickets',
+  notificar_cliente: 'Notificar a un cliente (simulado)',
+  resumir_tickets_cliente: 'Resumen de tickets por cliente',
+};
+
 fetch('/api/info').then(r => r.json()).then(info => {
+  const lista = document.getElementById('listaHerramientas');
+  if (info.herramientas && info.herramientas.length) {
+    lista.innerHTML = '';
+    info.herramientas.forEach(h => {
+      const li = document.createElement('li');
+      const nombre = document.createElement('strong');
+      nombre.textContent = NOMBRES_AMIGABLES[h.nombre] || h.nombre;
+      li.appendChild(nombre);
+      const cod = document.createElement('code');
+      cod.textContent = h.nombre;
+      li.appendChild(document.createTextNode(' '));
+      li.appendChild(cod);
+      li.appendChild(document.createTextNode(' — ' + h.descripcion));
+      if (h.requiere_confirmacion) {
+        const tag = document.createElement('span');
+        tag.className = 'tag-conf';
+        tag.textContent = 'requiere confirmación';
+        li.appendChild(tag);
+      }
+      lista.appendChild(li);
+    });
+  }
   const badges = document.getElementById('badges');
   const b1 = document.createElement('span');
   b1.className = 'badge' + (info.llm ? ' on' : '');
