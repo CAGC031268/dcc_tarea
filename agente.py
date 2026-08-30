@@ -375,9 +375,17 @@ CATALOGO_HERRAMIENTAS = [
 LLM_MODELOS_CANDIDATOS = [
     m.strip() for m in os.environ.get(
         "LLM_MODELOS",
-        "nvidia/nemotron-3.5-lightning:free,thinkingmachines/inkling:free,inclusionai/ling-3.0-flash-fin:free",
+        "nvidia/nemotron-3.5-lightning:free,thinkingmachines/inkling:free,"
+        "inclusionai/ling-3.0-flash-fin:free,poolside/laguna-s-2.1:free,"
+        "thinkingmachines/inkling-small:free,dots-studio/dots-3-note-preview:free",
     ).split(",") if m.strip()
 ]
+
+# Rotación round-robin entre modelos (LLM_ROTAR=0 la desactiva). El límite
+# diario del plan gratuito es por cuenta, no por modelo: la rotación reparte
+# carga entre modelos saturados, pero no esquiva la cuota diaria.
+LLM_ROTAR_MODELOS = os.environ.get("LLM_ROTAR", "1") != "0"
+LLM_INDICE_ROTACION = 0
 LLM_URL = "https://openrouter.ai/api/v1/chat/completions"
 LLM_MODELO_ACTIVO: Optional[str] = None
 LLM_FALLOS_SEGUIDOS = 0        # llamadas completas fallidas de forma consecutiva
@@ -390,7 +398,7 @@ def llm_disponible() -> bool:
 
 
 def chat_llm(messages: List[Dict[str, str]], temperatura: float = 0.0, max_tokens: int = 600) -> str:
-    global LLM_MODELO_ACTIVO, LLM_FALLOS_SEGUIDOS, LLM_CIRCUITO_ABIERTO, LLM_REINTENTO_DESDE
+    global LLM_MODELO_ACTIVO, LLM_FALLOS_SEGUIDOS, LLM_CIRCUITO_ABIERTO, LLM_REINTENTO_DESDE, LLM_INDICE_ROTACION
     if LLM_CIRCUITO_ABIERTO:
         if time.time() < LLM_REINTENTO_DESDE:
             raise RuntimeError("LLM en pausa tras fallos consecutivos (límite de peticiones probable).")
@@ -399,7 +407,13 @@ def chat_llm(messages: List[Dict[str, str]], temperatura: float = 0.0, max_token
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY no configurada.")
-    candidatos = [LLM_MODELO_ACTIVO] if LLM_MODELO_ACTIVO else list(LLM_MODELOS_CANDIDATOS)
+    if LLM_ROTAR_MODELOS:
+        n = len(LLM_MODELOS_CANDIDATOS)
+        inicio = LLM_INDICE_ROTACION % n
+        candidatos = [LLM_MODELOS_CANDIDATOS[(inicio + i) % n] for i in range(n)]
+        LLM_INDICE_ROTACION += 1
+    else:
+        candidatos = [LLM_MODELO_ACTIVO] if LLM_MODELO_ACTIVO else list(LLM_MODELOS_CANDIDATOS)
     errores = []
     for modelo in candidatos:
         for intento in range(2):
