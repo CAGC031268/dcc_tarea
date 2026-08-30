@@ -397,8 +397,13 @@ def chat_llm(messages: List[Dict[str, str]], temperatura: float = 0.0, max_token
         r = requests.post(
             LLM_URL,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": modelo, "messages": messages, "temperature": temperatura, "max_tokens": max_tokens},
-            timeout=60,
+            json={
+                "model": modelo, "messages": messages,
+                "temperature": temperatura, "max_tokens": max_tokens,
+                # Excluye la cadena de pensamiento de modelos con razonamiento.
+                "reasoning": {"exclude": True},
+            },
+            timeout=120,
         )
         if r.status_code == 200:
             LLM_MODELO_ACTIVO = modelo
@@ -418,16 +423,32 @@ class PlanAccion(BaseModel):
 
 
 def extraer_json(texto: str) -> Dict[str, Any]:
-    texto = texto.strip()
+    """Extrae el plan JSON tolerando texto extra y modelos con razonamiento:
+    se queda con el último objeto que contenga la clave "accion"."""
+    texto = re.sub(r"<think>.*?</think>", "", texto, flags=re.DOTALL).strip()
     if texto.startswith("```"):
         texto = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", texto).strip()
     try:
-        return json.loads(texto)
+        obj = json.loads(texto)
+        if isinstance(obj, dict):
+            return obj
     except json.JSONDecodeError:
-        inicio, fin = texto.find("{"), texto.rfind("}")
-        if inicio == -1 or fin <= inicio:
-            raise
-        return json.loads(texto[inicio:fin + 1])
+        pass
+    decoder = json.JSONDecoder()
+    candidatos = []
+    for m in re.finditer(r"\{", texto):
+        try:
+            obj, _ = decoder.raw_decode(texto, m.start())
+            if isinstance(obj, dict):
+                candidatos.append(obj)
+        except json.JSONDecodeError:
+            continue
+    con_accion = [c for c in candidatos if "accion" in c]
+    if con_accion:
+        return con_accion[-1]
+    if candidatos:
+        return candidatos[-1]
+    raise json.JSONDecodeError("Sin objeto JSON en la respuesta del modelo.", texto, 0)
 
 
 class AgenteSoporte:
@@ -480,6 +501,7 @@ class AgenteSoporte:
             f"Clientes conocidos: {json.dumps(clientes, ensure_ascii=False)}\n"
             "Estados válidos: abierto, en_progreso, cerrado. Prioridades: baja, media, alta, critica.\n\n"
             "Reglas:\n"
+            "- No expliques tu razonamiento: tu salida debe ser UNICAMENTE el objeto JSON final.\n"
             "- Usa exactamente una herramienta por turno.\n"
             "- No inventes clientes ni tickets; usa los cliente_id del contexto.\n"
             "- Si la solicitud es ambigua o general, usa resumir_tickets.\n"
@@ -494,7 +516,7 @@ class AgenteSoporte:
             texto = chat_llm(
                 [{"role": "system", "content": self._system_prompt()},
                  {"role": "user", "content": mensaje}],
-                temperatura=0.0, max_tokens=300,
+                temperatura=0.0, max_tokens=1500,  # margen para modelos con razonamiento
             )
             crudo = extraer_json(texto)
             salida["plan_crudo"] = crudo
@@ -595,12 +617,14 @@ class AgenteSoporte:
         system = ("Eres un agente de soporte. Redacta una respuesta breve y clara en español "
                   "usando EXCLUSIVAMENTE los datos de la observación. No inventes datos. "
                   "Si la observación pide confirmación humana, explica qué acción quedó pendiente. "
-                  "Texto plano, máximo 4 líneas.")
+                  "No muestres tu razonamiento ni pasos internos. Texto plano, máximo 4 líneas.")
         contexto = json.dumps({"solicitud_usuario": mensaje, "herramienta": accion.nombre,
                                "argumentos": accion.argumentos, "observacion": r.model_dump()},
                               ensure_ascii=False, default=str)
-        return chat_llm([{"role": "system", "content": system}, {"role": "user", "content": contexto}],
-                        temperatura=0.2, max_tokens=300)
+        texto = chat_llm([{"role": "system", "content": system}, {"role": "user", "content": contexto}],
+                         temperatura=0.2, max_tokens=800)
+        # Limpieza defensiva por si el modelo devuelve razonamiento interno.
+        return re.sub(r"<think>.*?</think>", "", texto, flags=re.DOTALL).strip()
 
     def responder(self, mensaje: str, confirmar: bool = False) -> Dict[str, Any]:
         inicio = time.time()
