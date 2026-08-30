@@ -422,9 +422,9 @@ class PlanAccion(BaseModel):
     requiere_confirmacion: bool = False
 
 
-def extraer_json(texto: str) -> Dict[str, Any]:
-    """Extrae el plan JSON tolerando texto extra y modelos con razonamiento:
-    se queda con el último objeto que contenga la clave "accion"."""
+def extraer_json(texto: str, clave: str = "accion") -> Dict[str, Any]:
+    """Extrae el JSON final tolerando texto extra y modelos con razonamiento:
+    se queda con el último objeto que contenga la clave pedida."""
     texto = re.sub(r"<think>.*?</think>", "", texto, flags=re.DOTALL).strip()
     if texto.startswith("```"):
         texto = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", texto).strip()
@@ -443,9 +443,9 @@ def extraer_json(texto: str) -> Dict[str, Any]:
                 candidatos.append(obj)
         except json.JSONDecodeError:
             continue
-    con_accion = [c for c in candidatos if "accion" in c]
-    if con_accion:
-        return con_accion[-1]
+    con_clave = [c for c in candidatos if clave in c]
+    if con_clave:
+        return con_clave[-1]
     if candidatos:
         return candidatos[-1]
     raise json.JSONDecodeError("Sin objeto JSON en la respuesta del modelo.", texto, 0)
@@ -503,6 +503,9 @@ class AgenteSoporte:
             "Reglas:\n"
             "- No expliques tu razonamiento: tu salida debe ser UNICAMENTE el objeto JSON final.\n"
             "- Usa exactamente una herramienta por turno.\n"
+            "- Para cerrar o cambiar el estado de un ticket usa SIEMPRE actualizar_estado_ticket, "
+            "aunque el usuario diga que ya está confirmado o resuelto (la confirmación humana ocurre "
+            "fuera del chat). Nunca respondas 'ayuda' en esos casos.\n"
             "- No inventes clientes ni tickets; usa los cliente_id del contexto.\n"
             "- Si la solicitud es ambigua o general, usa resumir_tickets.\n"
             "- Si faltan datos para crear un ticket, usa buscar_cliente primero.\n"
@@ -617,14 +620,19 @@ class AgenteSoporte:
         system = ("Eres un agente de soporte. Redacta una respuesta breve y clara en español "
                   "usando EXCLUSIVAMENTE los datos de la observación. No inventes datos. "
                   "Si la observación pide confirmación humana, explica qué acción quedó pendiente. "
-                  "No muestres tu razonamiento ni pasos internos. Texto plano, máximo 4 líneas.")
+                  "Máximo 4 líneas. Devuelve SOLO un objeto JSON "
+                  'con la forma {"respuesta": "texto para el usuario"}, sin nada más.')
         contexto = json.dumps({"solicitud_usuario": mensaje, "herramienta": accion.nombre,
                                "argumentos": accion.argumentos, "observacion": r.model_dump()},
                               ensure_ascii=False, default=str)
         texto = chat_llm([{"role": "system", "content": system}, {"role": "user", "content": contexto}],
                          temperatura=0.2, max_tokens=800)
-        # Limpieza defensiva por si el modelo devuelve razonamiento interno.
-        return re.sub(r"<think>.*?</think>", "", texto, flags=re.DOTALL).strip()
+        # Igual que en el planner: se extrae el JSON final aunque el modelo
+        # anteponga su razonamiento como texto.
+        respuesta = str(extraer_json(texto, clave="respuesta").get("respuesta", "")).strip()
+        if not respuesta:
+            raise ValueError("El modelo no entregó el campo 'respuesta'.")
+        return respuesta
 
     def responder(self, mensaje: str, confirmar: bool = False) -> Dict[str, Any]:
         inicio = time.time()
