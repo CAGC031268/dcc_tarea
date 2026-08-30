@@ -21,7 +21,8 @@ def info():
     return {
         "firestore": agente.firestore_activo,
         "llm": ag.llm_disponible(),
-        "modelo_activo": ag.LLM_MODELO_ACTIVO,
+        "proveedor": ag.detectar_proveedor(),
+        "modelo_activo": ag.modelo_en_uso(),
         "modelos_candidatos": ag.LLM_MODELOS_CANDIDATOS,
         "herramientas": ag.CATALOGO_HERRAMIENTAS,
     }
@@ -111,7 +112,7 @@ PAGINA = """<!doctype html>
     <h1>🛟 Agente de Soporte</h1>
     <div class="badges" id="badges"></div>
   </header>
-  <details class="info" id="panelInfo">
+  <details class="info" id="panelInfo" open>
     <summary>ℹ️ ¿Qué puede hacer este agente? — herramientas y limitaciones</summary>
     <ul id="listaHerramientas"><li>Cargando catálogo...</li></ul>
     <div class="descargo">
