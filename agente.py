@@ -394,20 +394,26 @@ def chat_llm(messages: List[Dict[str, str]], temperatura: float = 0.0, max_token
     candidatos = [LLM_MODELO_ACTIVO] if LLM_MODELO_ACTIVO else list(LLM_MODELOS_CANDIDATOS)
     errores = []
     for modelo in candidatos:
-        r = requests.post(
-            LLM_URL,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": modelo, "messages": messages,
-                "temperature": temperatura, "max_tokens": max_tokens,
-                # Excluye la cadena de pensamiento de modelos con razonamiento.
-                "reasoning": {"exclude": True},
-            },
-            timeout=120,
-        )
-        if r.status_code == 200:
-            LLM_MODELO_ACTIVO = modelo
-            return r.json()["choices"][0]["message"]["content"]
+        for intento in range(3):
+            r = requests.post(
+                LLM_URL,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": modelo, "messages": messages,
+                    "temperature": temperatura, "max_tokens": max_tokens,
+                    # Excluye la cadena de pensamiento de modelos con razonamiento.
+                    "reasoning": {"exclude": True},
+                },
+                timeout=120,
+            )
+            if r.status_code == 200:
+                LLM_MODELO_ACTIVO = modelo
+                return r.json()["choices"][0]["message"]["content"]
+            if r.status_code == 429:
+                # Límite de peticiones del plan gratuito: esperar y reintentar.
+                time.sleep(12 * (intento + 1))
+                continue
+            break  # otro error: probar el siguiente modelo
         errores.append(f"{modelo}: HTTP {r.status_code} -> {r.text[:200]}")
     LLM_MODELO_ACTIVO = None
     raise RuntimeError("Ningún modelo LLM respondió. " + " | ".join(errores))
