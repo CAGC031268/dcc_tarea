@@ -380,6 +380,9 @@ LLM_MODELOS_CANDIDATOS = [
 ]
 LLM_URL = "https://openrouter.ai/api/v1/chat/completions"
 LLM_MODELO_ACTIVO: Optional[str] = None
+LLM_FALLOS_SEGUIDOS = 0        # llamadas completas fallidas de forma consecutiva
+LLM_CIRCUITO_ABIERTO = False   # tras 2 fallos totales, se desactiva el LLM temporalmente
+LLM_REINTENTO_DESDE = 0.0      # cuándo volver a intentar (epoch)
 
 
 def llm_disponible() -> bool:
@@ -387,14 +390,19 @@ def llm_disponible() -> bool:
 
 
 def chat_llm(messages: List[Dict[str, str]], temperatura: float = 0.0, max_tokens: int = 600) -> str:
-    global LLM_MODELO_ACTIVO
+    global LLM_MODELO_ACTIVO, LLM_FALLOS_SEGUIDOS, LLM_CIRCUITO_ABIERTO, LLM_REINTENTO_DESDE
+    if LLM_CIRCUITO_ABIERTO:
+        if time.time() < LLM_REINTENTO_DESDE:
+            raise RuntimeError("LLM en pausa tras fallos consecutivos (límite de peticiones probable).")
+        LLM_CIRCUITO_ABIERTO = False  # reintentar pasado el periodo de espera
+        LLM_FALLOS_SEGUIDOS = 0
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY no configurada.")
     candidatos = [LLM_MODELO_ACTIVO] if LLM_MODELO_ACTIVO else list(LLM_MODELOS_CANDIDATOS)
     errores = []
     for modelo in candidatos:
-        for intento in range(3):
+        for intento in range(2):
             r = requests.post(
                 LLM_URL,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -408,6 +416,7 @@ def chat_llm(messages: List[Dict[str, str]], temperatura: float = 0.0, max_token
             )
             if r.status_code == 200:
                 LLM_MODELO_ACTIVO = modelo
+                LLM_FALLOS_SEGUIDOS = 0
                 return r.json()["choices"][0]["message"]["content"]
             if r.status_code == 429:
                 # Límite de peticiones del plan gratuito: esperar y reintentar.
@@ -416,6 +425,12 @@ def chat_llm(messages: List[Dict[str, str]], temperatura: float = 0.0, max_token
             break  # otro error: probar el siguiente modelo
         errores.append(f"{modelo}: HTTP {r.status_code} -> {r.text[:200]}")
     LLM_MODELO_ACTIVO = None
+    LLM_FALLOS_SEGUIDOS += 1
+    if LLM_FALLOS_SEGUIDOS >= 2:
+        # Pausa de 10 minutos antes de volver a intentar (evita colgar cada request).
+        LLM_CIRCUITO_ABIERTO = True
+        LLM_REINTENTO_DESDE = time.time() + 600
+        print("[chat_llm] LLM en pausa 10 min tras fallos consecutivos; se usa el planner determinista.")
     raise RuntimeError("Ningún modelo LLM respondió. " + " | ".join(errores))
 
 
