@@ -123,7 +123,7 @@ PAGINA = """<!doctype html>
       </a>
       <div>
         <h1>🛟 Agente de Soporte</h1>
-        <div class="subtitulo">Laboratorio de Agentes con LLM · DCC, Universidad de Chile</div>
+        <div class="subtitulo">Trabajo final — Curso Transformers y Agentes · DCC, Universidad de Chile</div>
       </div>
     </div>
     <div class="badges" id="badges"></div>
@@ -131,6 +131,12 @@ PAGINA = """<!doctype html>
   <details class="info" id="panelInfo" open>
     <summary>ℹ️ ¿Qué puede hacer este agente? — herramientas y limitaciones</summary>
     <ul id="listaHerramientas"><li>Cargando catálogo...</li></ul>
+    <div class="descargo">
+      <strong>Acerca de este sitio:</strong> este es el trabajo final del curso
+      <em>Transformers y Agentes</em> del DCC de la Universidad de Chile, realizado por
+      <strong>Carlos González C.</strong> No es una versión productiva: existe únicamente
+      con fines académicos de cierre de curso.
+    </div>
     <div class="descargo">
       <strong>Limitaciones:</strong> el agente solo ejecuta las operaciones listadas arriba;
       cualquier otra solicitud no está soportada ni se valida, y será rechazada o respondida
@@ -147,7 +153,7 @@ PAGINA = """<!doctype html>
     <input type="text" id="entrada" placeholder="Escribe tu solicitud..." autocomplete="off" maxlength="500">
     <button class="enviar" id="btn" type="submit">Enviar</button>
   </form>
-  <div class="descargo-pie">Agente demo con IA: puede cometer errores. Solo opera sobre los datos de prueba del laboratorio.</div>
+  <div class="descargo-pie">Trabajo final del curso Transformers y Agentes (DCC, U. de Chile) · Carlos González C. · Versión académica, no productiva — la IA puede cometer errores.</div>
 </div>
 <script>
 const chat = document.getElementById('chat');
