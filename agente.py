@@ -430,7 +430,9 @@ def _chat_openrouter(messages: List[Dict[str, str]], temperatura: float, max_tok
         candidatos = [LLM_MODELO_ACTIVO] if LLM_MODELO_ACTIVO else list(LLM_MODELOS_CANDIDATOS)
     errores = []
     for modelo in candidatos:
-        for intento in range(2):
+        # Sin esperas entre modelos: en la web, un 429 (modelo saturado o cuota)
+        # pasa de inmediato al siguiente candidato para no colgar la respuesta.
+        try:
             r = requests.post(
                 LLM_URL,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -440,16 +442,15 @@ def _chat_openrouter(messages: List[Dict[str, str]], temperatura: float, max_tok
                     # Excluye la cadena de pensamiento de modelos con razonamiento.
                     "reasoning": {"exclude": True},
                 },
-                timeout=120,
+                timeout=45,
             )
-            if r.status_code == 200:
-                LLM_MODELO_ACTIVO = modelo
-                LLM_FALLOS_SEGUIDOS = 0
-                return r.json()["choices"][0]["message"]["content"]
-            if r.status_code == 429:
-                time.sleep(12 * (intento + 1))  # límite de peticiones: esperar y reintentar
-                continue
-            break  # otro error: probar el siguiente modelo
+        except requests.exceptions.Timeout:
+            errores.append(f"{modelo}: timeout")
+            continue
+        if r.status_code == 200:
+            LLM_MODELO_ACTIVO = modelo
+            LLM_FALLOS_SEGUIDOS = 0
+            return r.json()["choices"][0]["message"]["content"]
         errores.append(f"{modelo}: HTTP {r.status_code} -> {r.text[:200]}")
 
     LLM_MODELO_ACTIVO = None

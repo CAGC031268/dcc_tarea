@@ -108,7 +108,7 @@ PAGINA = """<!doctype html>
               border:1px solid #fcd34d; border-radius:999px; padding:1px 8px; margin-left:6px; }
   .descargo { font-size:.75rem; color:var(--sec); line-height:1.45; border-top:1px solid var(--borde);
               margin-top:8px; padding-top:8px; }
-  .descargo-pie { font-size:.7rem; color:var(--sec); text-align:center; padding:6px 0 2px; }
+  .descargo-pie { font-size:14.2px; color:var(--sec); text-align:center; padding:6px 0 2px; }
 </style>
 </head>
 <body>
