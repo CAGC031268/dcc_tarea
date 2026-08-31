@@ -64,6 +64,11 @@ PAGINA = """<!doctype html>
   header { display:flex; align-items:center; justify-content:space-between; gap:8px;
            padding:10px 0 14px; }
   header h1 { font-size:1.15rem; margin:0; }
+  .marca { display:flex; align-items:center; gap:12px; }
+  .marca a.logo { background:#1f2937; border-radius:10px; padding:6px 10px; display:flex;
+                  align-items:center; }
+  .marca img { height:34px; display:block; }
+  .subtitulo { font-size:.72rem; color:var(--sec); margin-top:2px; }
   .badges { display:flex; gap:6px; flex-wrap:wrap; }
   .badge { font-size:.72rem; padding:3px 9px; border-radius:999px; border:1px solid var(--borde);
            background:var(--panel); color:var(--sec); }
@@ -109,7 +114,18 @@ PAGINA = """<!doctype html>
 <body>
 <div class="contenedor">
   <header>
-    <h1>🛟 Agente de Soporte</h1>
+    <div class="marca">
+      <a class="logo" href="https://dcc.uchile.cl/" target="_blank" rel="noopener"
+         title="DCC — Universidad de Chile">
+        <img src="https://dcc.uchile.cl/static/images/base/logo.svg"
+             alt="DCC — Ciencias de la Computación, Universidad de Chile"
+             onerror="this.parentElement.hidden = true;">
+      </a>
+      <div>
+        <h1>🛟 Agente de Soporte</h1>
+        <div class="subtitulo">Laboratorio de Agentes con LLM · DCC, Universidad de Chile</div>
+      </div>
+    </div>
     <div class="badges" id="badges"></div>
   </header>
   <details class="info" id="panelInfo" open>
