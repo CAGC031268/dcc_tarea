@@ -370,30 +370,34 @@ CATALOGO_HERRAMIENTAS = [
 
 
 # ----------------------------------------------------------------------------
-# Conexión LLM multi-proveedor: OpenRouter (defecto), Anthropic o Azure OpenAI
+# Conexión LLM: cadena de respaldo OpenRouter (<=10 s) -> Azure OpenAI -> regex
+#
+# 1) OpenRouter (modelos :free, rotación) con presupuesto máximo de 10 s por
+#    llamada; 2) Azure OpenAI como respaldo pagado; 3) si ambos fallan,
+#    chat_llm lanza excepción y el agente cae al planificador determinista.
 # ----------------------------------------------------------------------------
 def obtener_secreto(nombre: str) -> Optional[str]:
     return os.environ.get(nombre) or None
 
 
-def detectar_proveedor() -> Optional[str]:
-    forzado = (obtener_secreto("LLM_PROVEEDOR") or "").strip().lower()
-    if forzado in {"openrouter", "anthropic", "azure"}:
-        return forzado
+def cadena_llm() -> List[str]:
+    etapas = []
     if obtener_secreto("OPENROUTER_API_KEY"):
-        return "openrouter"
-    if obtener_secreto("ANTHROPIC_API_KEY"):
-        return "anthropic"
+        etapas.append("openrouter")
     if obtener_secreto("AZURE_OPENAI_API_KEY"):
-        return "azure"
-    return None
+        etapas.append("azure")
+    return etapas
 
 
 def llm_disponible() -> bool:
-    return detectar_proveedor() is not None
+    return bool(cadena_llm())
 
 
-# ---------- OpenRouter: modelos :free con rotación, reintentos y breaker ----------
+LLM_ETAPA_ACTIVA: Optional[str] = None  # última etapa/modelo que respondió
+
+# ---------- Etapa 1: OpenRouter ----------
+LLM_PRESUPUESTO_OPENROUTER = float(os.environ.get("LLM_PRESUPUESTO_OPENROUTER", "10"))
+LLM_URL = "https://openrouter.ai/api/v1/chat/completions"
 LLM_MODELOS_CANDIDATOS = [
     m.strip() for m in os.environ.get(
         "LLM_MODELOS",
@@ -402,36 +406,28 @@ LLM_MODELOS_CANDIDATOS = [
         "thinkingmachines/inkling-small:free,dots-studio/dots-3-note-preview:free",
     ).split(",") if m.strip()
 ]
-# Rotación round-robin (LLM_ROTAR=0 la desactiva). El límite diario del plan
-# gratuito es por cuenta, no por modelo: la rotación no esquiva la cuota.
 LLM_ROTAR_MODELOS = os.environ.get("LLM_ROTAR", "1") != "0"
 LLM_INDICE_ROTACION = 0
-LLM_URL = "https://openrouter.ai/api/v1/chat/completions"
-LLM_MODELO_ACTIVO: Optional[str] = None
-LLM_FALLOS_SEGUIDOS = 0        # llamadas completas fallidas de forma consecutiva
-LLM_CIRCUITO_ABIERTO = False   # tras 2 fallos totales, pausa temporal del LLM
-LLM_REINTENTO_DESDE = 0.0      # cuándo volver a intentar (epoch)
 
 
 def _chat_openrouter(messages: List[Dict[str, str]], temperatura: float, max_tokens: int) -> str:
-    global LLM_MODELO_ACTIVO, LLM_FALLOS_SEGUIDOS, LLM_CIRCUITO_ABIERTO, LLM_REINTENTO_DESDE, LLM_INDICE_ROTACION
-    if LLM_CIRCUITO_ABIERTO:
-        if time.time() < LLM_REINTENTO_DESDE:
-            raise RuntimeError("LLM en pausa tras fallos consecutivos (límite de peticiones probable).")
-        LLM_CIRCUITO_ABIERTO = False
-        LLM_FALLOS_SEGUIDOS = 0
+    global LLM_INDICE_ROTACION, LLM_ETAPA_ACTIVA
     api_key = obtener_secreto("OPENROUTER_API_KEY")
+    inicio = time.time()
     if LLM_ROTAR_MODELOS:
         n = len(LLM_MODELOS_CANDIDATOS)
-        inicio = LLM_INDICE_ROTACION % n
-        candidatos = [LLM_MODELOS_CANDIDATOS[(inicio + i) % n] for i in range(n)]
+        desde = LLM_INDICE_ROTACION % n
+        candidatos = [LLM_MODELOS_CANDIDATOS[(desde + i) % n] for i in range(n)]
         LLM_INDICE_ROTACION += 1
     else:
-        candidatos = [LLM_MODELO_ACTIVO] if LLM_MODELO_ACTIVO else list(LLM_MODELOS_CANDIDATOS)
+        candidatos = list(LLM_MODELOS_CANDIDATOS)
+
     errores = []
     for modelo in candidatos:
-        # Sin esperas entre modelos: en la web, un 429 (modelo saturado o cuota)
-        # pasa de inmediato al siguiente candidato para no colgar la respuesta.
+        restante = LLM_PRESUPUESTO_OPENROUTER - (time.time() - inicio)
+        if restante <= 0:
+            errores.append(f"presupuesto de {LLM_PRESUPUESTO_OPENROUTER:.0f}s agotado")
+            break
         try:
             r = requests.post(
                 LLM_URL,
@@ -442,54 +438,25 @@ def _chat_openrouter(messages: List[Dict[str, str]], temperatura: float, max_tok
                     # Excluye la cadena de pensamiento de modelos con razonamiento.
                     "reasoning": {"exclude": True},
                 },
-                timeout=45,
+                timeout=max(1.0, restante),
             )
-        except requests.exceptions.Timeout:
-            errores.append(f"{modelo}: timeout")
+        except requests.exceptions.RequestException as error:
+            errores.append(f"{modelo}: {type(error).__name__}")
             continue
         if r.status_code == 200:
-            LLM_MODELO_ACTIVO = modelo
-            LLM_FALLOS_SEGUIDOS = 0
+            LLM_ETAPA_ACTIVA = f"openrouter:{modelo}"
             return r.json()["choices"][0]["message"]["content"]
-        errores.append(f"{modelo}: HTTP {r.status_code} -> {r.text[:200]}")
+        errores.append(f"{modelo}: HTTP {r.status_code}")
 
-    LLM_MODELO_ACTIVO = None
-    LLM_FALLOS_SEGUIDOS += 1
-    if LLM_FALLOS_SEGUIDOS >= 2:
-        # Pausa de 10 minutos antes de volver a intentar (evita colgar cada request).
-        LLM_CIRCUITO_ABIERTO = True
-        LLM_REINTENTO_DESDE = time.time() + 600
-        print("[chat_llm] LLM en pausa 10 min tras fallos consecutivos; se usa el planner determinista.")
-    raise RuntimeError("Ningún modelo LLM respondió. " + " | ".join(errores))
+    raise RuntimeError("; ".join(errores) or "sin modelos candidatos")
 
 
-# ---------- Claude Platform (API de Anthropic) ----------
-ANTHROPIC_MODELO = os.environ.get("ANTHROPIC_MODELO", "claude-haiku-4-5")
-ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-
-
-def _chat_anthropic(messages: List[Dict[str, str]], temperatura: float, max_tokens: int) -> str:
-    api_key = obtener_secreto("ANTHROPIC_API_KEY")
-    system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
-    resto = [m for m in messages if m["role"] != "system"]
-    r = requests.post(
-        ANTHROPIC_URL,
-        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01",
-                 "content-type": "application/json"},
-        json={"model": ANTHROPIC_MODELO, "max_tokens": max_tokens,
-              "temperature": temperatura, "system": system, "messages": resto},
-        timeout=120,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"Anthropic HTTP {r.status_code} -> {r.text[:300]}")
-    return r.json()["content"][0]["text"]
-
-
-# ---------- Azure OpenAI ----------
+# ---------- Etapa 2: Azure OpenAI ----------
 AZURE_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 
 
 def _chat_azure(messages: List[Dict[str, str]], temperatura: float, max_tokens: int) -> str:
+    global LLM_ETAPA_ACTIVA
     api_key = obtener_secreto("AZURE_OPENAI_API_KEY")
     endpoint = (obtener_secreto("AZURE_OPENAI_ENDPOINT") or "").rstrip("/")
     deployment = obtener_secreto("AZURE_OPENAI_DEPLOYMENT")
@@ -504,7 +471,7 @@ def _chat_azure(messages: List[Dict[str, str]], temperatura: float, max_tokens: 
             url,
             headers={"api-key": api_key, "Content-Type": "application/json"},
             json=body,
-            timeout=120,
+            timeout=45,
         )
         if r.status_code != 400:
             break
@@ -518,36 +485,42 @@ def _chat_azure(messages: List[Dict[str, str]], temperatura: float, max_tokens: 
         else:
             break
     if r.status_code != 200:
-        raise RuntimeError(f"Azure OpenAI HTTP {r.status_code} -> {r.text[:300]}")
+        raise RuntimeError(f"HTTP {r.status_code} -> {r.text[:300]}")
     contenido = r.json()["choices"][0]["message"]["content"]
     if not contenido:
-        raise RuntimeError("Azure devolvió contenido vacío: sube max_tokens (los modelos de "
-                           "razonamiento consumen parte del presupuesto en pensar).")
+        raise RuntimeError("contenido vacío (sube max_tokens: los modelos de razonamiento "
+                           "consumen presupuesto en pensar).")
+    LLM_ETAPA_ACTIVA = f"azure:{deployment}"
     return contenido
 
 
 def chat_llm(messages: List[Dict[str, str]], temperatura: float = 0.0, max_tokens: int = 600) -> str:
-    """Punto único de entrada al LLM: despacha según el proveedor configurado."""
-    proveedor = detectar_proveedor()
-    if proveedor == "anthropic":
-        return _chat_anthropic(messages, temperatura, max_tokens)
-    if proveedor == "azure":
-        return _chat_azure(messages, temperatura, max_tokens)
-    if proveedor == "openrouter":
-        return _chat_openrouter(messages, temperatura, max_tokens)
-    raise RuntimeError("Ninguna API key configurada: define OPENROUTER_API_KEY, "
-                       "ANTHROPIC_API_KEY o AZURE_OPENAI_API_KEY (+ endpoint y deployment).")
+    """Cadena de respaldo: OpenRouter (máx. 10 s) -> Azure OpenAI.
+
+    Si ninguna etapa responde, lanza excepción y el agente usa el planificador
+    determinista (regex) — el tercer y último nivel de la cadena.
+    """
+    errores = []
+    if obtener_secreto("OPENROUTER_API_KEY"):
+        try:
+            return _chat_openrouter(messages, temperatura, max_tokens)
+        except Exception as error:
+            errores.append(f"[openrouter] {error}")
+    if obtener_secreto("AZURE_OPENAI_API_KEY"):
+        try:
+            return _chat_azure(messages, temperatura, max_tokens)
+        except Exception as error:
+            errores.append(f"[azure] {error}")
+    if errores:
+        raise RuntimeError("Cadena LLM sin respuesta -> fallback determinista. " + " | ".join(errores))
+    raise RuntimeError("Ninguna API key configurada: define OPENROUTER_API_KEY y/o AZURE_OPENAI_*.")
 
 
 def modelo_en_uso() -> str:
-    proveedor = detectar_proveedor()
-    if proveedor == "openrouter":
-        return LLM_MODELO_ACTIVO or "openrouter (por definir)"
-    if proveedor == "anthropic":
-        return ANTHROPIC_MODELO
-    if proveedor == "azure":
-        return f"azure:{obtener_secreto('AZURE_OPENAI_DEPLOYMENT') or '?'}"
-    return "ninguno"
+    if LLM_ETAPA_ACTIVA:
+        return LLM_ETAPA_ACTIVA
+    etapas = cadena_llm()
+    return (etapas[0] + " (por definir)") if etapas else "ninguno"
 
 
 # ----------------------------------------------------------------------------
@@ -816,5 +789,5 @@ class AgenteSoporte:
             "resultado_ok": resultado.ok,
             "pendiente_confirmacion": pendiente_confirmacion,
             "memoria_id": evento["id"],
-            "modelo": LLM_MODELO_ACTIVO,
+            "modelo": modelo_en_uso(),
         }

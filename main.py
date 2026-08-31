@@ -18,10 +18,12 @@ class ChatIn(BaseModel):
 
 @app.get("/api/info")
 def info():
+    cadena = ag.cadena_llm()
     return {
         "firestore": agente.firestore_activo,
         "llm": ag.llm_disponible(),
-        "proveedor": ag.detectar_proveedor(),
+        "proveedor": cadena[0] if cadena else None,
+        "cadena": cadena + ["regex"],
         "modelo_activo": ag.modelo_en_uso(),
         "modelos_candidatos": ag.LLM_MODELOS_CANDIDATOS,
         "herramientas": ag.CATALOGO_HERRAMIENTAS,
